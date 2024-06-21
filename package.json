@@ -1,0 +1,15 @@
+{
+  "name": "linovel",
+  "version": "1.0.0",
+  "main": "linovel.js",
+  "scripts": {
+    "ready": "node getBookList.js > ./bookList",
+    "start": "last=$(cd books && find . -type f -name 'info.json' -maxdepth 2 -exec dirname {} \\; 2>/dev/null | grep -o -E '1.*' | tail -n 1) node linovel.mjs"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "jsdom": "^24.1.0"
+  }
+}
