@@ -6,27 +6,57 @@ import { JSDOM } from "jsdom"; // dom simulator, mainly provides Element.prototy
 import { readFileSync } from "node:fs"; // readFileSync to init and recover from exit
 import { mkdir, writeFile } from "node:fs/promises"; // mkdir and writeFile as promises to use in async context
 
+class ExpectRetryError extends Error {
+	constructor( reason, retries ){
+		super( reason );
+		this.retries = retries;
+	}
+}
 
 // set maximum fetch frequency when fetch
-function fetchSleep( url, config ){
+function fetchSleep( url, config, retries = 5 ){
     console.log( "fetching", url );
-    return Promise.allSettled( [ sleep(0.5), fetch( new URL( url, urlRoot ), config ) ] ).then( ([ , { value } ]) => value )
+    return Promise.allSettled( [ sleep(0.5), fetch( new URL( url, urlRoot ), config ) ] ).
+        then( ([ , response ]) => response ).
+        then( ( { value } ) => {
+            if( value?.ok )
+                return value;
+            else
+                throw new ExpectRetryError( `fetch url ${url} failed`, retries );
+        } )
 }
 
 function saveFigureTo( url, path ){
     return fetchSleep( url, { method: "GET" } ).
-        then( _ => _.arrayBuffer() ).
-        then( buffer => writeFile( path, Buffer.from( buffer ) ) );
+		then(
+			success => success,
+			({ retries }) => {
+				if( retries > 0 )
+					return fetchSleep( url, { method: "GET" }, retries - 1 )
+				else
+					throw new Error( `fetch figure ${url} failed, expected to save to ${path}` )
+			}
+		).
+		then( _ => _.arrayBuffer() ).
+		then( buffer => writeFile( path, Buffer.from( buffer ) ) ).
+		catch( reason => console.error( reason ) );
 }
 
 const urlRoot = "https://www.linovel.net";
 async function getBookInfo( id ){
 
-    // prepare the dir to save to
-    await mkdir( `./books/${id}`, { recursive: true } );
+    let page;
+    try {
 
-    // get page HTML
-    const page = await fetchSleep( `/book/${id}.html#catalog`, { method: "GET" } ).then( _ => _.text() ).then( _ => new JSDOM( _ ) );
+        // get page HTML
+        page = await fetchSleep( `/book/${id}.html#catalog`, { method: "GET" } ).then( _ => _.text() ).then( _ => new JSDOM( _ ) );
+
+        // prepare the dir to save to
+        await mkdir( `./books/${id}`, { recursive: true } );
+
+    } catch( error ){
+        return;
+    }
 
     // get book cover
     const coverURL = page.window.document.querySelector('div.book-cover a img').src;
@@ -56,17 +86,21 @@ async function getBookInfo( id ){
             desc : div.querySelector("div.volume-info div.volume-desc div.text-content-actual").innerHTML,
             chaps: [...div.querySelectorAll("div.chapter-list div.chapter a")].map( ({ href, innerHTML }) => ({href, innerHTML}) )
         };
-        
+
         let imageCount = 0;
         // read chapters
         for( let chapterIndex in info.chaps ){
 
             // get chapter url and fetch page HTML
             const { href: url } = info.chaps[ chapterIndex ];
-            const page = await fetchSleep( url, { method: "GET" } ).then( _ => _.text() ).then( _ => new JSDOM(_) );
+            const page = await fetchSleep( url, { method: "GET" } ).then( _ => _.text() ).then( _ => new JSDOM(_), error => error );
+            if( page instanceof ExpectRetryError ){
+                console.error( page );
+                continue;
+            }
 
             // read page basic info and store them globally( in book info.json file rather than in chapter )
-            const [ updateTime, wordCount ] = [...page.window.document.querySelectorAll("div.article-info i")].map( _ => _.innerHTML )
+            const [ updateTime, wordCount ] = [...page.window.document.querySelectorAll("div.article-info")].map( _ => _.childNodes[2].textContent.trim() )
             info.chaps[chapterIndex].updateTime = updateTime;
             info.chaps[chapterIndex].wordCount = wordCount;
 
@@ -97,13 +131,11 @@ async function getBookInfo( id ){
 }
 
 // recover when exited without completing the full task
-const last = process.env.last ?? 100000;
+const last = +readFileSync( "./last.index", "utf8" );
 const books = readFileSync( "./bookList", "utf8" ).
     split( /\n/g ).
-    map( line => line.split( / /g ).map( _ => +_ ) ).
-    filter( ( [ , status ] ) => status >= 200 && status < 400 ).
-    map( _ => _[0] ).
-    filter( id => id >= last )
+    map( _ => +_ ).
+    filter( id => id >= last );
 
 for( let book of books )
     await getBookInfo( book );
