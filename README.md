@@ -22,7 +22,7 @@ npm run start
 pm2 start "npm run ready"
 ```
 
-and when it's done you may
+and when it's down you may
 ```shell
 pm2 start "npm run start"
 ```
